@@ -1,10 +1,8 @@
 import os
+import json
 import logging
 from datetime import datetime
-from telegram import (
-    Update, InlineKeyboardButton, InlineKeyboardMarkup,
-    ReplyKeyboardMarkup, KeyboardButton
-)
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
     MessageHandler, filters, ContextTypes, ConversationHandler
@@ -14,72 +12,53 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ─── НАСТРОЙКИ ────────────────────────────────────────────────────────────────
-BOT_TOKEN = os.getenv("BOT_TOKEN", "ВСТАВЬТЕ_ТОКЕН_СЮДА")
-REPORT_CHAT_ID = os.getenv("REPORT_CHAT_ID", "ВСТАВЬТЕ_ID_ЧАТА_СЮДА")  # ID групповой беседы
+BOT_TOKEN = os.getenv("BOT_TOKEN", "ВСТАВЬТЕ_ТОКЕН")
+REPORT_CHAT_ID = os.getenv("REPORT_CHAT_ID", "ВСТАВЬТЕ_ID_ЧАТА")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))  # Ваш личный Telegram ID
 
-# ─── ЧЕК-ЛИСТЫ ────────────────────────────────────────────────────────────────
-CHECKLISTS = {
-    "open": {
-        "name": "🌅 Открытие ПВЗ",
-        "emoji": "🌅",
-        "items": [
-            "Пришёл вовремя, ПВЗ открыт в срок",
-            "Проверил освещение и оборудование",
-            "Компьютер/терминал включён и работает",
-            "Рабочее место убрано и готово",
-            "Кассовый ящик проверен",
-            "Расходные материалы в наличии (скотч, пакеты)",
-            "Вывеска/режим работы на месте",
-        ],
-    },
-    "close": {
-        "name": "🌙 Закрытие ПВЗ",
-        "emoji": "🌙",
-        "items": [
-            "Все посылки оприходованы в системе",
-            "Касса закрыта и сверена",
-            "Нерабочие заказы отложены/помечены",
-            "Рабочее место убрано",
-            "Оборудование выключено",
-            "Дверь заперта, сигнализация включена",
-            "Остатки пересчитаны и записаны",
-        ],
-    },
-    "clean": {
-        "name": "🧹 Уборка и чистота",
-        "emoji": "🧹",
-        "items": [
-            "Пол подметён / вымыт",
-            "Стойка/стол протёрты",
-            "Полки для товара чистые",
-            "Мусор вынесен",
-            "Туалет убран (если есть)",
-            "Входная зона чистая",
-            "Зеркала/стёкла без пятен",
-        ],
-    },
-    "stock": {
-        "name": "📦 Остатки и товары",
-        "emoji": "📦",
-        "items": [
-            "Пересчитан входящий товар",
-            "Излишки/недостача зафиксированы",
-            "Бракованные позиции помечены",
-            "Полки заполнены и аккуратно расставлены",
-            "Ценники актуальны",
-            "Расходники пополнены или заявка отправлена",
-        ],
-    },
-}
+USERS_FILE = "users.json"  # Хранилище пользователей
 
 # ─── СОСТОЯНИЯ ────────────────────────────────────────────────────────────────
-CHOOSING_LIST, DOING_CHECKLIST, WAITING_PHOTO, CONFIRM_SEND = range(4)
+(
+    MAIN_MENU,
+    DOING_OPEN, OPEN_PHOTO,
+    DOING_CLOSE, CLOSE_PHOTO_SHIPMENT, CLOSE_PHOTO_RECEPTION, CLOSE_PHOTO_PVZ,
+    DOING_CLEAN, CLEAN_PHOTOS,
+    DOING_INVENTORY, INVENTORY_INPUT, INVENTORY_PHOTO,
+    WAITING_ANY_PHOTO,
+) = range(13)
 
-# ─── ХРАНИЛИЩЕ СЕССИЙ ─────────────────────────────────────────────────────────
-# { user_id: { list_key, name, items_done: {idx: bool}, photos: [file_id], current_item } }
-sessions = {}
+# ─── ХРАНИЛИЩЕ ────────────────────────────────────────────────────────────────
+sessions = {}  # { user_id: {...} }
 
 
+def load_users():
+    if os.path.exists(USERS_FILE):
+        with open(USERS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+
+def save_users(users):
+    with open(USERS_FILE, "w", encoding="utf-8") as f:
+        json.dump(users, f, ensure_ascii=False, indent=2)
+
+
+def get_user(user_id):
+    users = load_users()
+    return users.get(str(user_id))
+
+
+def is_approved(user_id):
+    u = get_user(user_id)
+    return u and u.get("status") == "approved"
+
+
+def is_admin(user_id):
+    return user_id == ADMIN_ID
+
+
+# ─── ВСПОМОГАТЕЛЬНЫЕ ──────────────────────────────────────────────────────────
 def get_session(user_id):
     return sessions.get(user_id, {})
 
@@ -88,298 +67,774 @@ def set_session(user_id, data):
     sessions[user_id] = data
 
 
-# ─── /start ───────────────────────────────────────────────────────────────────
-async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    keyboard = [
-        [InlineKeyboardButton("🌅 Открытие ПВЗ", callback_data="list_open")],
-        [InlineKeyboardButton("🌙 Закрытие ПВЗ", callback_data="list_close")],
-        [InlineKeyboardButton("🧹 Уборка и чистота", callback_data="list_clean")],
-        [InlineKeyboardButton("📦 Остатки и товары", callback_data="list_stock")],
-    ]
-    await update.message.reply_text(
-        f"Привет, {user.first_name}! 👋\n\n"
-        "Выбери чек-лист для заполнения:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-    return CHOOSING_LIST
+def now_str():
+    return datetime.now().strftime("%d.%m.%Y %H:%M")
 
 
-# ─── ВЫБОР ЧЕК-ЛИСТА ──────────────────────────────────────────────────────────
-async def choose_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    list_key = query.data.replace("list_", "")
-    user = query.from_user
-
-    checklist = CHECKLISTS[list_key]
-    set_session(user.id, {
-        "list_key": list_key,
-        "name": user.first_name,
-        "username": user.username or user.first_name,
-        "items_done": {},
-        "photos": [],
-        "current_item": None,
-        "started_at": datetime.now().strftime("%d.%m.%Y %H:%M"),
-    })
-
-    await query.edit_message_text(
-        f"{checklist['emoji']} *{checklist['name']}*\n\n"
-        "Пройдём по каждому пункту. Нажимай ✅ если выполнено, ❌ если нет.\n"
-        "Фото можно прикрепить на любом шаге командой /photo\n\n"
-        "Начинаем! 👇",
-        parse_mode="Markdown"
-    )
-    await send_checklist(update, ctx, user.id, edit=False)
-    return DOING_CHECKLIST
-
-
-async def send_checklist(update, ctx, user_id, edit=False):
-    session = get_session(user_id)
-    list_key = session["list_key"]
-    checklist = CHECKLISTS[list_key]
-    items = checklist["items"]
-    done = session["items_done"]
-
-    keyboard = []
-    for i, item in enumerate(items):
-        status = "✅" if done.get(i) is True else ("❌" if done.get(i) is False else "⬜")
-        keyboard.append([InlineKeyboardButton(
-            f"{status} {item}", callback_data=f"item_{i}"
-        )])
-
-    keyboard.append([
-        InlineKeyboardButton("📸 Прикрепить фото", callback_data="add_photo"),
+def main_menu_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🌅 Открытие ПВЗ", callback_data="menu_open")],
+        [InlineKeyboardButton("🌙 Закрытие ПВЗ", callback_data="menu_close")],
+        [InlineKeyboardButton("🧹 Уборка и чистота", callback_data="menu_clean")],
+        [InlineKeyboardButton("📦 Инвентаризация", callback_data="menu_inventory")],
     ])
 
-    completed = sum(1 for v in done.values() if v is True)
-    failed = sum(1 for v in done.values() if v is False)
 
-    if len(done) == len(items):
-        keyboard.append([
-            InlineKeyboardButton("📤 Отправить отчёт", callback_data="send_report")
-        ])
+# ─── /start — РЕГИСТРАЦИЯ ─────────────────────────────────────────────────────
+async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    uid = str(user.id)
+    users = load_users()
 
-    photos_count = len(session.get("photos", []))
-    text = (
-        f"{checklist['emoji']} *{checklist['name']}*\n"
-        f"👤 {session['name']} | 🕐 {session['started_at']}\n\n"
-        f"✅ Выполнено: {completed} | ❌ Не выполнено: {failed} | ⬜ Осталось: {len(items) - len(done)}\n"
-        f"📸 Фото: {photos_count}\n\n"
-        "Отметь каждый пункт:"
+    # Если уже одобрен — сразу главное меню
+    if uid in users and users[uid]["status"] == "approved":
+        city = users[uid].get("city", "—")
+        await update.message.reply_text(
+            f"Привет, {user.first_name}! 👋\n🏙 Город: *{city}*\n\nВыбери чек-лист:",
+            reply_markup=main_menu_keyboard(),
+            parse_mode="Markdown"
+        )
+        return MAIN_MENU
+
+    # Если уже ожидает — напомнить
+    if uid in users and users[uid]["status"] == "pending":
+        await update.message.reply_text(
+            "⏳ Твоя заявка уже отправлена, ожидай одобрения от руководителя."
+        )
+        return ConversationHandler.END
+
+    # Новый пользователь — отправляем заявку
+    users[uid] = {
+        "status": "pending",
+        "name": user.first_name,
+        "username": user.username or "",
+        "city": None,
+        "registered_at": now_str(),
+    }
+    save_users(users)
+
+    await update.message.reply_text(
+        "👋 Привет!\n\n"
+        "Твоя заявка на доступ к боту отправлена руководителю.\n"
+        "Как только тебя одобрят — сможешь начать работу.\n\n"
+        "⏳ Ожидай сообщения..."
     )
 
-    msg = update.callback_query.message if update.callback_query else update.message
-    if edit and update.callback_query:
-        await update.callback_query.edit_message_text(
-            text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown"
-        )
+    # Уведомляем администратора
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(f"✅ Одобрить (Гатчина)", callback_data=f"approve_{uid}_Гатчина"),
+            InlineKeyboardButton(f"✅ Одобрить (Всеволожск)", callback_data=f"approve_{uid}_Всеволожск"),
+        ],
+        [InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_{uid}")],
+    ])
+    name_display = f"{user.first_name}"
+    if user.username:
+        name_display += f" (@{user.username})"
+
+    await ctx.bot.send_message(
+        chat_id=ADMIN_ID,
+        text=f"🔔 *Новая заявка на доступ*\n\n"
+             f"👤 {name_display}\n"
+             f"🆔 ID: `{user.id}`\n"
+             f"📅 {now_str()}\n\n"
+             f"Выбери город и одобри или отклони:",
+        reply_markup=keyboard,
+        parse_mode="Markdown"
+    )
+    return ConversationHandler.END
+
+
+# ─── ОБРАБОТКА ЗАЯВОК АДМИНИСТРАТОРОМ ────────────────────────────────────────
+async def handle_admin_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if not is_admin(query.from_user.id):
+        return
+
+    data = query.data
+    users = load_users()
+
+    if data.startswith("approve_"):
+        parts = data.split("_", 2)
+        uid = parts[1]
+        city = parts[2]
+        if uid in users:
+            users[uid]["status"] = "approved"
+            users[uid]["city"] = city
+            save_users(users)
+            name = users[uid]["name"]
+            await query.edit_message_text(
+                f"✅ Сотрудник *{name}* одобрен\n🏙 Город: *{city}*",
+                parse_mode="Markdown"
+            )
+            await ctx.bot.send_message(
+                chat_id=int(uid),
+                text=f"✅ Доступ одобрен!\n\n"
+                     f"🏙 Твой город: *{city}*\n\n"
+                     f"Напиши /start чтобы начать работу.",
+                parse_mode="Markdown"
+            )
+
+    elif data.startswith("reject_"):
+        uid = data.replace("reject_", "")
+        if uid in users:
+            name = users[uid]["name"]
+            users[uid]["status"] = "rejected"
+            save_users(users)
+            await query.edit_message_text(f"❌ Сотрудник *{name}* отклонён.", parse_mode="Markdown")
+            await ctx.bot.send_message(
+                chat_id=int(uid),
+                text="❌ К сожалению, в доступе отказано. Обратитесь к руководителю."
+            )
+
+    elif data.startswith("remove_"):
+        uid = data.replace("remove_", "")
+        if uid in users:
+            name = users[uid]["name"]
+            del users[uid]
+            save_users(users)
+            await query.edit_message_text(f"🗑 Сотрудник *{name}* удалён.", parse_mode="Markdown")
+            try:
+                await ctx.bot.send_message(
+                    chat_id=int(uid),
+                    text="⛔ Ваш доступ к боту был отозван руководителем."
+                )
+            except Exception:
+                pass
+
+
+# ─── /staff — список сотрудников (только для админа) ─────────────────────────
+async def staff_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return
+    users = load_users()
+    approved = {uid: u for uid, u in users.items() if u["status"] == "approved"}
+    pending = {uid: u for uid, u in users.items() if u["status"] == "pending"}
+
+    text = "👥 *Сотрудники с доступом:*\n\n"
+    if approved:
+        for uid, u in approved.items():
+            uname = f"@{u['username']}" if u.get("username") else "—"
+            text += f"• {u['name']} ({uname}) — {u.get('city', '—')}\n"
     else:
-        await msg.reply_text(
-            text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown"
+        text += "_Нет одобренных сотрудников_\n"
+
+    keyboard = []
+    for uid, u in approved.items():
+        keyboard.append([InlineKeyboardButton(
+            f"🗑 Удалить {u['name']} ({u.get('city','—')})",
+            callback_data=f"remove_{uid}"
+        )])
+
+    if pending:
+        text += f"\n⏳ *Ожидают одобрения: {len(pending)}*\n"
+        for uid, u in pending.items():
+            uname = f"@{u['username']}" if u.get("username") else "—"
+            text += f"• {u['name']} ({uname})\n"
+            keyboard.append([
+                InlineKeyboardButton(f"✅ {u['name']} (Гатчина)", callback_data=f"approve_{uid}_Гатчина"),
+                InlineKeyboardButton(f"✅ (Всеволожск)", callback_data=f"approve_{uid}_Всеволожск"),
+            ])
+            keyboard.append([InlineKeyboardButton(f"❌ Отклонить {u['name']}", callback_data=f"reject_{uid}")])
+
+    await update.message.reply_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None,
+        parse_mode="Markdown"
+    )
+
+
+# ─── ГЛАВНОЕ МЕНЮ ─────────────────────────────────────────────────────────────
+async def main_menu_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+
+    if not is_approved(user_id):
+        await query.message.reply_text("⛔ У вас нет доступа.")
+        return ConversationHandler.END
+
+    user_info = get_user(user_id)
+    city = user_info.get("city", "—")
+    name = user_info.get("name", query.from_user.first_name)
+    username = user_info.get("username") or query.from_user.first_name
+
+    base_session = {
+        "name": name,
+        "username": username,
+        "city": city,
+        "started_at": now_str(),
+        "photos": {},
+    }
+
+    action = query.data
+
+    if action == "menu_open":
+        set_session(user_id, {**base_session, "type": "open"})
+        await query.edit_message_text(
+            f"🌅 *ОТКРЫТИЕ ПВЗ*\n🏙 {city}\n\n"
+            "Нажми кнопку, чтобы зафиксировать открытие смены.\n"
+            "Затем прикрепи обязательное фото.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Открываю смену!", callback_data="open_confirm")],
+            ]),
+            parse_mode="Markdown"
         )
+        return DOING_OPEN
+
+    elif action == "menu_close":
+        set_session(user_id, {**base_session, "type": "close",
+                               "all_shipped": None,
+                               "photos": {"shipment": None, "reception": None, "pvz": None}})
+        await query.edit_message_text(
+            f"🌙 *ЗАКРЫТИЕ ПВЗ*\n🏙 {city}\n\n"
+            "Все посылки отгружены?",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✅ Да, все отгружены", callback_data="shipped_yes"),
+                    InlineKeyboardButton("❌ Нет", callback_data="shipped_no"),
+                ]
+            ]),
+            parse_mode="Markdown"
+        )
+        return DOING_CLOSE
+
+    elif action == "menu_clean":
+        set_session(user_id, {**base_session, "type": "clean",
+                               "items": {}, "photos": []})
+        return await show_clean_checklist(update, ctx, user_id, edit=True)
+
+    elif action == "menu_inventory":
+        set_session(user_id, {**base_session, "type": "inventory",
+                               "found": None, "not_found": None, "photo": None})
+        await query.edit_message_text(
+            f"📦 *ИНВЕНТАРИЗАЦИЯ*\n🏙 {city}\n\n"
+            "Введи количество *найденных* посылок (цифрой):",
+            parse_mode="Markdown"
+        )
+        return INVENTORY_INPUT
 
 
-# ─── ОТМЕТКА ПУНКТА ───────────────────────────────────────────────────────────
-async def handle_item(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+# ══════════════════════════════════════════════════════════════════════════════
+# 🌅 ОТКРЫТИЕ ПВЗ
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def open_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    session = get_session(user_id)
+    session["confirmed"] = True
+    set_session(user_id, session)
+
+    await query.edit_message_text(
+        "✅ Отлично! Теперь прикрепи фото — *обязательно*.\n\n"
+        "📸 Отправь фото прямо сейчас:",
+        parse_mode="Markdown"
+    )
+    return OPEN_PHOTO
+
+
+async def open_receive_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    session = get_session(user_id)
+
+    if not update.message.photo:
+        await update.message.reply_text("📸 Нужно отправить фото!")
+        return OPEN_PHOTO
+
+    session["open_photo"] = update.message.photo[-1].file_id
+    set_session(user_id, session)
+
+    await update.message.reply_text(
+        "✅ Фото получено! Отправляю отчёт...",
+    )
+    await send_open_report(update, ctx, user_id)
+    return ConversationHandler.END
+
+
+async def send_open_report(update, ctx, user_id):
+    session = get_session(user_id)
+    text = (
+        f"{'─' * 30}\n"
+        f"🌅 *ОТКРЫТИЕ ПВЗ*\n"
+        f"{'─' * 30}\n"
+        f"👤 {session['name']} (@{session['username']})\n"
+        f"🏙 Город: {session['city']}\n"
+        f"🕐 Время открытия: {session['started_at']}\n"
+        f"{'─' * 30}\n"
+        f"✅ Смена открыта\n"
+        f"📸 Фото прилагается"
+    )
+    await ctx.bot.send_message(chat_id=REPORT_CHAT_ID, text=text, parse_mode="Markdown")
+    if session.get("open_photo"):
+        await ctx.bot.send_photo(chat_id=REPORT_CHAT_ID, photo=session["open_photo"])
+
+    await update.message.reply_text(
+        "✅ Отчёт об открытии отправлен! Хорошей смены! 💪\n\n/start — вернуться в меню"
+    )
+    sessions.pop(user_id, None)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🌙 ЗАКРЫТИЕ ПВЗ
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def close_shipped(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
     session = get_session(user_id)
 
-    if query.data == "add_photo":
-        await query.message.reply_text(
-            "📸 Отправь фото прямо сейчас (можно несколько).\n"
-            "Когда закончишь — нажми /done_photo"
-        )
-        session["waiting_photo"] = True
-        set_session(user_id, session)
-        return WAITING_PHOTO
-
-    if query.data == "send_report":
-        await send_report(update, ctx, user_id)
-        return ConversationHandler.END
-
-    if query.data.startswith("item_"):
-        idx = int(query.data.replace("item_", ""))
-        checklist = CHECKLISTS[session["list_key"]]
-        items = checklist["items"]
-
-        # Показываем кнопки ✅/❌
-        keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("✅ Выполнено", callback_data=f"mark_ok_{idx}"),
-                InlineKeyboardButton("❌ Не выполнено", callback_data=f"mark_fail_{idx}"),
-            ],
-            [InlineKeyboardButton("« Назад к списку", callback_data="back_to_list")],
-        ])
-        await query.edit_message_text(
-            f"Пункт {idx + 1} из {len(items)}:\n\n*{items[idx]}*\n\nКак отметить?",
-            reply_markup=keyboard,
-            parse_mode="Markdown"
-        )
-    elif query.data.startswith("mark_ok_") or query.data.startswith("mark_fail_"):
-        ok = query.data.startswith("mark_ok_")
-        idx = int(query.data.split("_")[-1])
-        session["items_done"][idx] = ok
-        set_session(user_id, session)
-        await send_checklist(update, ctx, user_id, edit=True)
-
-    elif query.data == "back_to_list":
-        await send_checklist(update, ctx, user_id, edit=True)
-
-    return DOING_CHECKLIST
-
-
-# ─── ПРИЁМ ФОТО ───────────────────────────────────────────────────────────────
-async def receive_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    session = get_session(user_id)
-
-    if update.message.photo:
-        file_id = update.message.photo[-1].file_id
-        session.setdefault("photos", []).append(file_id)
-        set_session(user_id, session)
-        await update.message.reply_text(
-            f"📸 Фото сохранено! Всего: {len(session['photos'])}\n"
-            "Отправь ещё или напиши /done_photo чтобы вернуться к чек-листу."
-        )
-    return WAITING_PHOTO
-
-
-async def done_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    session = get_session(user_id)
-    session["waiting_photo"] = False
+    session["all_shipped"] = (query.data == "shipped_yes")
     set_session(user_id, session)
 
-    checklist = CHECKLISTS[session["list_key"]]
-    items = checklist["items"]
-    done = session["items_done"]
+    await query.edit_message_text(
+        "📸 Прикрепи фото для закрытия смены.\n\n"
+        "Сначала отправь *фото страницы отгрузки*:",
+        parse_mode="Markdown"
+    )
+    return CLOSE_PHOTO_SHIPMENT
+
+
+async def close_photo_shipment(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    session = get_session(user_id)
+    if not update.message.photo:
+        await update.message.reply_text("📸 Нужно отправить фото страницы отгрузки!")
+        return CLOSE_PHOTO_SHIPMENT
+    session["photos"]["shipment"] = update.message.photo[-1].file_id
+    set_session(user_id, session)
+    await update.message.reply_text("✅ Принято! Теперь отправь *фото страницы приёмки*:", parse_mode="Markdown")
+    return CLOSE_PHOTO_RECEPTION
+
+
+async def close_photo_reception(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    session = get_session(user_id)
+    if not update.message.photo:
+        await update.message.reply_text("📸 Нужно отправить фото страницы приёмки!")
+        return CLOSE_PHOTO_RECEPTION
+    session["photos"]["reception"] = update.message.photo[-1].file_id
+    set_session(user_id, session)
+    await update.message.reply_text("✅ Принято! Теперь отправь *фото ПВЗ в конце смены*:", parse_mode="Markdown")
+    return CLOSE_PHOTO_PVZ
+
+
+async def close_photo_pvz(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    session = get_session(user_id)
+    if not update.message.photo:
+        await update.message.reply_text("📸 Нужно отправить фото ПВЗ!")
+        return CLOSE_PHOTO_PVZ
+    session["photos"]["pvz"] = update.message.photo[-1].file_id
+    set_session(user_id, session)
+    await update.message.reply_text("✅ Все фото получены! Отправляю отчёт...")
+    await send_close_report(update, ctx, user_id)
+    return ConversationHandler.END
+
+
+async def send_close_report(update, ctx, user_id):
+    session = get_session(user_id)
+    shipped = "✅ Да" if session.get("all_shipped") else "❌ Нет"
+    text = (
+        f"{'─' * 30}\n"
+        f"🌙 *ЗАКРЫТИЕ ПВЗ*\n"
+        f"{'─' * 30}\n"
+        f"👤 {session['name']} (@{session['username']})\n"
+        f"🏙 Город: {session['city']}\n"
+        f"🕐 Время: {session['started_at']}\n"
+        f"📤 Отправлено: {now_str()}\n"
+        f"{'─' * 30}\n"
+        f"📦 Все посылки отгружены: {shipped}\n"
+        f"{'─' * 30}\n"
+        f"📸 Фото отгрузки: ✅\n"
+        f"📸 Фото приёмки: ✅\n"
+        f"📸 Фото ПВЗ: ✅"
+    )
+    await ctx.bot.send_message(chat_id=REPORT_CHAT_ID, text=text, parse_mode="Markdown")
+
+    from telegram import InputMediaPhoto
+    photos = session["photos"]
+    media = []
+    if photos.get("shipment"):
+        media.append(InputMediaPhoto(media=photos["shipment"], caption="📄 Страница отгрузки"))
+    if photos.get("reception"):
+        media.append(InputMediaPhoto(media=photos["reception"], caption="📄 Страница приёмки"))
+    if photos.get("pvz"):
+        media.append(InputMediaPhoto(media=photos["pvz"], caption="🏪 ПВЗ в конце смены"))
+    if media:
+        await ctx.bot.send_media_group(chat_id=REPORT_CHAT_ID, media=media)
+
+    await update.message.reply_text(
+        "✅ Отчёт о закрытии отправлен! До завтра! 👋\n\n/start — вернуться в меню"
+    )
+    sessions.pop(user_id, None)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 🧹 УБОРКА И ЧИСТОТА
+# ══════════════════════════════════════════════════════════════════════════════
+
+CLEAN_ITEMS = [
+    "Пол подметён / вымыт",
+    "Стойка/стол протёрты",
+    "Зеркала/стёкла без пятен",
+]
+
+
+async def show_clean_checklist(update, ctx, user_id, edit=False):
+    session = get_session(user_id)
+    done = session.get("items", {})
+    photos = session.get("photos", [])
+    completed = sum(1 for v in done.values() if v is True)
+    failed = sum(1 for v in done.values() if v is False)
 
     keyboard = []
-    for i, item in enumerate(items):
+    for i, item in enumerate(CLEAN_ITEMS):
         status = "✅" if done.get(i) is True else ("❌" if done.get(i) is False else "⬜")
-        keyboard.append([InlineKeyboardButton(f"{status} {item}", callback_data=f"item_{i}")])
-    keyboard.append([InlineKeyboardButton("📸 Прикрепить фото", callback_data="add_photo")])
-    if len(done) == len(items):
-        keyboard.append([InlineKeyboardButton("📤 Отправить отчёт", callback_data="send_report")])
+        keyboard.append([InlineKeyboardButton(f"{status} {item}", callback_data=f"clean_item_{i}")])
 
-    photos_count = len(session.get("photos", []))
-    completed = sum(1 for v in done.values() if v is True)
-    failed = sum(1 for v in done.values() if v is False)
+    keyboard.append([InlineKeyboardButton(f"📸 Добавить фото ({len(photos)}/3)", callback_data="clean_add_photo")])
+
+    all_marked = len(done) == len(CLEAN_ITEMS)
+    has_enough_photos = len(photos) >= 3
+    if all_marked and has_enough_photos:
+        keyboard.append([InlineKeyboardButton("📤 Отправить отчёт", callback_data="clean_send")])
+    elif all_marked and not has_enough_photos:
+        keyboard.append([InlineKeyboardButton(f"⚠️ Нужно минимум 3 фото (есть {len(photos)})", callback_data="noop")])
 
     text = (
-        f"{checklist['emoji']} *{checklist['name']}*\n"
-        f"👤 {session['name']} | 🕐 {session['started_at']}\n\n"
-        f"✅ Выполнено: {completed} | ❌ Не выполнено: {failed} | ⬜ Осталось: {len(items) - len(done)}\n"
-        f"📸 Фото: {photos_count}\n\n"
+        f"🧹 *УБОРКА И ЧИСТОТА*\n"
+        f"🏙 {session['city']}\n\n"
+        f"✅ {completed} | ❌ {failed} | ⬜ {len(CLEAN_ITEMS) - len(done)}\n"
+        f"📸 Фото: {len(photos)} (нужно минимум 3)\n\n"
         "Отметь каждый пункт:"
     )
-    await update.message.reply_text(
-        text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown"
-    )
-    return DOING_CHECKLIST
+
+    msg = update.callback_query.message if update.callback_query else update.message
+    if edit and update.callback_query:
+        await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    else:
+        await msg.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    return DOING_CLEAN
 
 
-# ─── ОТПРАВКА ОТЧЁТА ──────────────────────────────────────────────────────────
-async def send_report(update, ctx, user_id):
+async def clean_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
     session = get_session(user_id)
-    list_key = session["list_key"]
-    checklist = CHECKLISTS[list_key]
-    items = checklist["items"]
-    done = session["items_done"]
 
+    if query.data == "noop":
+        return DOING_CLEAN
+
+    if query.data == "clean_add_photo":
+        await query.message.reply_text(
+            "📸 Отправь фото (нужно минимум 3).\n"
+            "Когда закончишь — напиши /done_photo"
+        )
+        session["waiting_photo_for"] = "clean"
+        set_session(user_id, session)
+        return CLEAN_PHOTOS
+
+    if query.data == "clean_send":
+        photos = session.get("photos", [])
+        if len(photos) < 3:
+            await query.answer("⚠️ Нужно минимум 3 фото!", show_alert=True)
+            return DOING_CLEAN
+        await send_clean_report(query, ctx, user_id)
+        return ConversationHandler.END
+
+    if query.data.startswith("clean_item_"):
+        idx = int(query.data.replace("clean_item_", ""))
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ Выполнено", callback_data=f"clean_mark_ok_{idx}"),
+                InlineKeyboardButton("❌ Не выполнено", callback_data=f"clean_mark_fail_{idx}"),
+            ],
+            [InlineKeyboardButton("« Назад", callback_data="clean_back")],
+        ])
+        await query.edit_message_text(
+            f"*{CLEAN_ITEMS[idx]}*\n\nКак отметить?",
+            reply_markup=kb, parse_mode="Markdown"
+        )
+        return DOING_CLEAN
+
+    if query.data.startswith("clean_mark_"):
+        parts = query.data.split("_")
+        ok = parts[2] == "ok"
+        idx = int(parts[3])
+        session["items"][idx] = ok
+        set_session(user_id, session)
+        return await show_clean_checklist(update, ctx, user_id, edit=True)
+
+    if query.data == "clean_back":
+        return await show_clean_checklist(update, ctx, user_id, edit=True)
+
+    return DOING_CLEAN
+
+
+async def clean_receive_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    session = get_session(user_id)
+    if update.message.photo:
+        session.setdefault("photos", []).append(update.message.photo[-1].file_id)
+        set_session(user_id, session)
+        await update.message.reply_text(
+            f"📸 Фото {len(session['photos'])} добавлено!\n"
+            "Отправь ещё или напиши /done_photo"
+        )
+    return CLEAN_PHOTOS
+
+
+async def clean_done_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    session = get_session(user_id)
+    photos = session.get("photos", [])
+    if len(photos) < 3:
+        await update.message.reply_text(f"⚠️ Нужно минимум 3 фото! Сейчас: {len(photos)}. Отправь ещё.")
+        return CLEAN_PHOTOS
+    return await show_clean_checklist(update, ctx, user_id, edit=False)
+
+
+async def send_clean_report(query_or_update, ctx, user_id):
+    session = get_session(user_id)
+    done = session.get("items", {})
+    photos = session.get("photos", [])
     completed = sum(1 for v in done.values() if v is True)
     failed = sum(1 for v in done.values() if v is False)
-    total = len(items)
 
     lines = [
         f"{'─' * 30}",
-        f"{checklist['emoji']} *ОТЧЁТ: {checklist['name'].upper()}*",
+        f"🧹 *УБОРКА И ЧИСТОТА*",
         f"{'─' * 30}",
-        f"👤 Сотрудник: {session['name']} (@{session['username']})",
-        f"📅 Время: {session['started_at']}",
-        f"📤 Отправлено: {datetime.now().strftime('%d.%m.%Y %H:%M')}",
+        f"👤 {session['name']} (@{session['username']})",
+        f"🏙 Город: {session['city']}",
+        f"🕐 {session['started_at']}",
+        f"📤 Отправлено: {now_str()}",
         f"{'─' * 30}",
-        f"📋 *РЕЗУЛЬТАТ: {completed}/{total}*",
+        f"📋 *Результат: {completed}/{len(CLEAN_ITEMS)}*",
         "",
     ]
-
-    for i, item in enumerate(items):
-        status = "✅" if done.get(i) is True else ("❌" if done.get(i) is False else "⬜ не проверено")
+    for i, item in enumerate(CLEAN_ITEMS):
+        status = "✅" if done.get(i) is True else ("❌" if done.get(i) is False else "⬜")
         lines.append(f"{status} {item}")
-
-    lines += [
-        "",
-        f"{'─' * 30}",
-        f"📸 Фото: {len(session.get('photos', []))} шт.",
-        f"{'─' * 30}",
-    ]
-
+    lines += [f"{'─' * 30}", f"📸 Фото: {len(photos)} шт."]
     if failed > 0:
-        lines.append(f"\n⚠️ *Внимание: {failed} пункт(а) не выполнено!*")
+        lines.append(f"\n⚠️ *{failed} пункт(а) не выполнено!*")
 
-    report_text = "\n".join(lines)
+    await ctx.bot.send_message(chat_id=REPORT_CHAT_ID, text="\n".join(lines), parse_mode="Markdown")
 
-    # Отправляем текст
-    await ctx.bot.send_message(
-        chat_id=REPORT_CHAT_ID,
-        text=report_text,
-        parse_mode="Markdown"
-    )
-
-    # Отправляем фото
-    photos = session.get("photos", [])
     if photos:
         from telegram import InputMediaPhoto
-        media = [InputMediaPhoto(media=fid) for fid in photos[:10]]  # max 10
+        media = [InputMediaPhoto(media=fid) for fid in photos[:10]]
         await ctx.bot.send_media_group(chat_id=REPORT_CHAT_ID, media=media)
 
-    # Подтверждение сотруднику
-    msg = update.callback_query.message if update.callback_query else update.message
-    await msg.reply_text(
-        f"✅ Отчёт успешно отправлен!\n\n"
-        f"📊 Итог: {completed}/{total} выполнено\n"
-        f"📸 Фото: {len(photos)} шт.\n\n"
-        "Хорошей смены! 💪\n\n"
-        "Для нового чек-листа — /start"
-    )
-
-    # Очищаем сессию
+    msg = query_or_update.message if hasattr(query_or_update, 'message') else query_or_update
+    await msg.reply_text("✅ Отчёт об уборке отправлен!\n\n/start — вернуться в меню")
     sessions.pop(user_id, None)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 📦 ИНВЕНТАРИЗАЦИЯ
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def inventory_input(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    session = get_session(user_id)
+    text = update.message.text.strip()
+
+    if session.get("found") is None:
+        if not text.isdigit():
+            await update.message.reply_text("⚠️ Введи число! Сколько посылок *найдено*?", parse_mode="Markdown")
+            return INVENTORY_INPUT
+        session["found"] = int(text)
+        set_session(user_id, session)
+        await update.message.reply_text("✅ Принято! Теперь введи количество *НЕ найденных* посылок:", parse_mode="Markdown")
+        return INVENTORY_INPUT
+
+    if session.get("not_found") is None:
+        if not text.isdigit():
+            await update.message.reply_text("⚠️ Введи число! Сколько посылок *не найдено*?", parse_mode="Markdown")
+            return INVENTORY_INPUT
+        session["not_found"] = int(text)
+        set_session(user_id, session)
+        await update.message.reply_text(
+            f"✅ Записал!\n\n"
+            f"📦 Найдено: *{session['found']}*\n"
+            f"❌ Не найдено: *{session['not_found']}*\n\n"
+            f"📸 Теперь прикрепи *обязательное фото* инвентаризации:",
+            parse_mode="Markdown"
+        )
+        return INVENTORY_PHOTO
+
+    return INVENTORY_INPUT
+
+
+async def inventory_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    session = get_session(user_id)
+    if not update.message.photo:
+        await update.message.reply_text("📸 Нужно отправить фото для инвентаризации!")
+        return INVENTORY_PHOTO
+    session["photo"] = update.message.photo[-1].file_id
+    set_session(user_id, session)
+    await update.message.reply_text("✅ Фото получено! Отправляю отчёт...")
+    await send_inventory_report(update, ctx, user_id)
+    return ConversationHandler.END
+
+
+async def send_inventory_report(update, ctx, user_id):
+    session = get_session(user_id)
+    found = session.get("found", 0)
+    not_found = session.get("not_found", 0)
+    total = found + not_found
+
+    text = (
+        f"{'─' * 30}\n"
+        f"📦 *ИНВЕНТАРИЗАЦИЯ*\n"
+        f"{'─' * 30}\n"
+        f"👤 {session['name']} (@{session['username']})\n"
+        f"🏙 Город: {session['city']}\n"
+        f"🕐 {session['started_at']}\n"
+        f"📤 Отправлено: {now_str()}\n"
+        f"{'─' * 30}\n"
+        f"📦 Всего проверено: *{total}*\n"
+        f"✅ Найдено: *{found}*\n"
+        f"❌ Не найдено: *{not_found}*\n"
+        f"{'─' * 30}\n"
+        f"📸 Фото прилагается"
+    )
+    if not_found > 0:
+        text += f"\n\n⚠️ *Внимание: {not_found} посылок не найдено!*"
+
+    await ctx.bot.send_message(chat_id=REPORT_CHAT_ID, text=text, parse_mode="Markdown")
+    if session.get("photo"):
+        await ctx.bot.send_photo(chat_id=REPORT_CHAT_ID, photo=session["photo"])
+
+    await update.message.reply_text(
+        f"✅ Отчёт инвентаризации отправлен!\n\n"
+        f"📦 Найдено: {found} | ❌ Не найдено: {not_found}\n\n"
+        "/start — вернуться в меню"
+    )
+    sessions.pop(user_id, None)
+
+
+# ─── ЗАЩИТА: БЛОКИРОВКА НЕАВТОРИЗОВАННЫХ ──────────────────────────────────────
+async def block_unauthorized(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if is_admin(user_id) or is_approved(user_id):
+        return  # разрешаем
+    await update.message.reply_text(
+        "⛔ У вас нет доступа к этому боту.\n"
+        "Напишите /start чтобы отправить заявку."
+    )
 
 
 # ─── ОТМЕНА ───────────────────────────────────────────────────────────────────
 async def cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     sessions.pop(update.effective_user.id, None)
-    await update.message.reply_text(
-        "Чек-лист отменён. Для начала — /start"
-    )
+    await update.message.reply_text("Отменено. /start — вернуться в меню.")
     return ConversationHandler.END
+
+
+# ─── НАПОМИНАНИЕ В 12:00 ──────────────────────────────────────────────────────
+async def send_inventory_reminder(ctx: ContextTypes.DEFAULT_TYPE):
+    users = load_users()
+    today = datetime.now().strftime("%d.%m.%Y")
+    count = 0
+    for uid, u in users.items():
+        if u.get("status") == "approved":
+            # Напоминаем всем одобренным сотрудникам
+            try:
+                await ctx.bot.send_message(
+                    chat_id=int(uid),
+                    text=f"⏰ *Напоминание об инвентаризации!*\n\n"
+                         f"🏙 {u.get('city', '—')} | 📅 {today}\n\n"
+                         f"Пора провести инвентаризацию посылок.\n"
+                         f"Нажми /start и выбери 📦 Инвентаризация",
+                    parse_mode="Markdown"
+                )
+                count += 1
+            except Exception as e:
+                logger.warning(f"Не удалось отправить напоминание {uid}: {e}")
+    logger.info(f"Напоминания отправлены: {count} сотрудников")
 
 
 # ─── MAIN ─────────────────────────────────────────────────────────────────────
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
+    # Планировщик напоминаний в 12:00
+    job_queue = app.job_queue
+    job_queue.run_daily(
+        send_inventory_reminder,
+        time=datetime.strptime("12:00", "%H:%M").time().replace(tzinfo=None),
+        days=(0, 1, 2, 3, 4, 5, 6),
+    )
+
     conv = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
+        entry_points=[
+            CommandHandler("start", start),
+            CallbackQueryHandler(main_menu_callback, pattern="^menu_"),
+        ],
         states={
-            CHOOSING_LIST: [CallbackQueryHandler(choose_list, pattern="^list_")],
-            DOING_CHECKLIST: [
-                CallbackQueryHandler(handle_item),
+            MAIN_MENU: [
+                CallbackQueryHandler(main_menu_callback, pattern="^menu_"),
             ],
-            WAITING_PHOTO: [
-                MessageHandler(filters.PHOTO, receive_photo),
-                CommandHandler("done_photo", done_photo),
+            DOING_OPEN: [
+                CallbackQueryHandler(open_confirm, pattern="^open_confirm$"),
+            ],
+            OPEN_PHOTO: [
+                MessageHandler(filters.PHOTO, open_receive_photo),
+            ],
+            DOING_CLOSE: [
+                CallbackQueryHandler(close_shipped, pattern="^shipped_"),
+            ],
+            CLOSE_PHOTO_SHIPMENT: [
+                MessageHandler(filters.PHOTO, close_photo_shipment),
+            ],
+            CLOSE_PHOTO_RECEPTION: [
+                MessageHandler(filters.PHOTO, close_photo_reception),
+            ],
+            CLOSE_PHOTO_PVZ: [
+                MessageHandler(filters.PHOTO, close_photo_pvz),
+            ],
+            DOING_CLEAN: [
+                CallbackQueryHandler(clean_callback, pattern="^clean_"),
+            ],
+            CLEAN_PHOTOS: [
+                MessageHandler(filters.PHOTO, clean_receive_photo),
+                CommandHandler("done_photo", clean_done_photo),
+            ],
+            INVENTORY_INPUT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, inventory_input),
+            ],
+            INVENTORY_PHOTO: [
+                MessageHandler(filters.PHOTO, inventory_photo),
             ],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
+        fallbacks=[
+            CommandHandler("cancel", cancel),
+            CommandHandler("start", start),
+        ],
         allow_reentry=True,
     )
 
     app.add_handler(conv)
+
+    # Команды только для админа
+    app.add_handler(CommandHandler("staff", staff_list))
+
+    # Обработка кнопок одобрения/удаления сотрудников
+    app.add_handler(CallbackQueryHandler(
+        handle_admin_action,
+        pattern="^(approve_|reject_|remove_)"
+    ))
+
     logger.info("Бот запущен ✅")
     app.run_polling(drop_pending_updates=True)
 
