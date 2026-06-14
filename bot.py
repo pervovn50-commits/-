@@ -366,7 +366,7 @@ async def send_open_report(update, ctx, user_id):
     session = get_session(user_id)
     text = (
         f"{'─' * 30}\n"
-        f"🌅 *ОТКРЫТИЕ ПВЗ*\n"
+        f"🌅 ОТКРЫТИЕ ПВЗ\n"
         f"{'─' * 30}\n"
         f"👤 {session['name']} (@{session['username']})\n"
         f"🏙 Город: {session['city']}\n"
@@ -375,7 +375,7 @@ async def send_open_report(update, ctx, user_id):
         f"✅ Смена открыта\n"
         f"📸 Фото прилагается"
     )
-    await ctx.bot.send_message(chat_id=REPORT_CHAT_ID, text=text, parse_mode="Markdown")
+    await ctx.bot.send_message(chat_id=REPORT_CHAT_ID, text=text)
     if session.get("open_photo"):
         await ctx.bot.send_photo(chat_id=REPORT_CHAT_ID, photo=session["open_photo"])
 
@@ -448,7 +448,7 @@ async def send_close_report(update, ctx, user_id):
     shipped = "✅ Да" if session.get("all_shipped") else "❌ Нет"
     text = (
         f"{'─' * 30}\n"
-        f"🌙 *ЗАКРЫТИЕ ПВЗ*\n"
+        f"🌙 ЗАКРЫТИЕ ПВЗ\n"
         f"{'─' * 30}\n"
         f"👤 {session['name']} (@{session['username']})\n"
         f"🏙 Город: {session['city']}\n"
@@ -461,7 +461,7 @@ async def send_close_report(update, ctx, user_id):
         f"📸 Фото приёмки: ✅\n"
         f"📸 Фото ПВЗ: ✅"
     )
-    await ctx.bot.send_message(chat_id=REPORT_CHAT_ID, text=text, parse_mode="Markdown")
+    await ctx.bot.send_message(chat_id=REPORT_CHAT_ID, text=text)
 
     from telegram import InputMediaPhoto
     photos = session["photos"]
@@ -616,14 +616,14 @@ async def send_clean_report(query_or_update, ctx, user_id):
 
     lines = [
         f"{'─' * 30}",
-        f"🧹 *УБОРКА И ЧИСТОТА*",
+        f"🧹 УБОРКА И ЧИСТОТА",
         f"{'─' * 30}",
         f"👤 {session['name']} (@{session['username']})",
         f"🏙 Город: {session['city']}",
         f"🕐 {session['started_at']}",
         f"📤 Отправлено: {now_str()}",
         f"{'─' * 30}",
-        f"📋 *Результат: {completed}/{len(CLEAN_ITEMS)}*",
+        f"📋 Результат: {completed}/{len(CLEAN_ITEMS)}",
         "",
     ]
     for i, item in enumerate(CLEAN_ITEMS):
@@ -631,9 +631,9 @@ async def send_clean_report(query_or_update, ctx, user_id):
         lines.append(f"{status} {item}")
     lines += [f"{'─' * 30}", f"📸 Фото: {len(photos)} шт."]
     if failed > 0:
-        lines.append(f"\n⚠️ *{failed} пункт(а) не выполнено!*")
+        lines.append(f"\n⚠️ {failed} пункт(а) не выполнено!")
 
-    await ctx.bot.send_message(chat_id=REPORT_CHAT_ID, text="\n".join(lines), parse_mode="Markdown")
+    await ctx.bot.send_message(chat_id=REPORT_CHAT_ID, text="\n".join(lines))
 
     if photos:
         from telegram import InputMediaPhoto
@@ -702,23 +702,23 @@ async def send_inventory_report(update, ctx, user_id):
 
     text = (
         f"{'─' * 30}\n"
-        f"📦 *ИНВЕНТАРИЗАЦИЯ*\n"
+        f"📦 ИНВЕНТАРИЗАЦИЯ\n"
         f"{'─' * 30}\n"
         f"👤 {session['name']} (@{session['username']})\n"
         f"🏙 Город: {session['city']}\n"
         f"🕐 {session['started_at']}\n"
         f"📤 Отправлено: {now_str()}\n"
         f"{'─' * 30}\n"
-        f"📦 Всего проверено: *{total}*\n"
-        f"✅ Найдено: *{found}*\n"
-        f"❌ Не найдено: *{not_found}*\n"
+        f"📦 Всего проверено: {total}\n"
+        f"✅ Найдено: {found}\n"
+        f"❌ Не найдено: {not_found}\n"
         f"{'─' * 30}\n"
         f"📸 Фото прилагается"
     )
     if not_found > 0:
-        text += f"\n\n⚠️ *Внимание: {not_found} посылок не найдено!*"
+        text += f"\n\n⚠️ Внимание: {not_found} посылок не найдено!"
 
-    await ctx.bot.send_message(chat_id=REPORT_CHAT_ID, text=text, parse_mode="Markdown")
+    await ctx.bot.send_message(chat_id=REPORT_CHAT_ID, text=text)
     if session.get("photo"):
         await ctx.bot.send_photo(chat_id=REPORT_CHAT_ID, photo=session["photo"])
 
