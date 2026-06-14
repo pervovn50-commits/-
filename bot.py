@@ -1,7 +1,7 @@
 import os
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone, time as dtime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
@@ -734,6 +734,15 @@ async def block_unauthorized(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# ─── ТЕСТ НАПОМИНАНИЯ (только для админа) ────────────────────────────────────
+async def test_reminder(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return
+    await update.message.reply_text("🔔 Отправляю тестовое напоминание всем сотрудникам...")
+    await send_inventory_reminder(ctx)
+    await update.message.reply_text("✅ Готово! Все сотрудники получили напоминание.")
+
+
 # ─── ОТМЕНА ───────────────────────────────────────────────────────────────────
 async def cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     sessions.pop(update.effective_user.id, None)
@@ -741,19 +750,36 @@ async def cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-# ─── НАПОМИНАНИЕ В 12:00 ──────────────────────────────────────────────────────
+# ─── НАПОМИНАНИЕ ПО ПН И ЧТ РАЗ В ДВЕ НЕДЕЛИ В 12:00 МСК ───────────────────
 async def send_inventory_reminder(ctx: ContextTypes.DEFAULT_TYPE):
+    now_msk = datetime.now(timezone.utc).astimezone(
+        timezone(datetime.now(timezone.utc).astimezone().utcoffset())
+    )
+    # Используем московское время через смещение UTC+3
+    from datetime import timedelta
+    now_msk = datetime.now(timezone.utc) + timedelta(hours=3)
+
+    weekday = now_msk.weekday()   # 0=пн, 3=чт
+    week_number = now_msk.isocalendar()[1]
+
+    # Только понедельник (0) или четверг (3), и только чётные недели
+    if weekday not in (0, 3):
+        return
+    if week_number % 2 != 0:
+        return
+
     users = load_users()
-    today = datetime.now().strftime("%d.%m.%Y")
+    today = now_msk.strftime("%d.%m.%Y")
+    day_name = "понедельник" if weekday == 0 else "четверг"
     count = 0
+
     for uid, u in users.items():
         if u.get("status") == "approved":
-            # Напоминаем всем одобренным сотрудникам
             try:
                 await ctx.bot.send_message(
                     chat_id=int(uid),
                     text=f"⏰ *Напоминание об инвентаризации!*\n\n"
-                         f"🏙 {u.get('city', '—')} | 📅 {today}\n\n"
+                         f"🏙 {u.get('city', '—')} | 📅 {today} ({day_name})\n\n"
                          f"Пора провести инвентаризацию посылок.\n"
                          f"Нажми /start и выбери 📦 Инвентаризация",
                     parse_mode="Markdown"
@@ -768,11 +794,12 @@ async def send_inventory_reminder(ctx: ContextTypes.DEFAULT_TYPE):
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # Планировщик напоминаний в 12:00
+    # Напоминание каждый день в 09:00 UTC (= 12:00 МСК)
+    # Фильтрация по пн/чт и чётным неделям — внутри функции
     job_queue = app.job_queue
     job_queue.run_daily(
         send_inventory_reminder,
-        time=datetime.strptime("12:00", "%H:%M").time().replace(tzinfo=None),
+        time=dtime(9, 0, tzinfo=timezone.utc),
         days=(0, 1, 2, 3, 4, 5, 6),
     )
 
@@ -828,6 +855,7 @@ def main():
 
     # Команды только для админа
     app.add_handler(CommandHandler("staff", staff_list))
+    app.add_handler(CommandHandler("test_reminder", test_reminder))
 
     # Обработка кнопок одобрения/удаления сотрудников
     app.add_handler(CallbackQueryHandler(
