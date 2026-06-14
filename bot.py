@@ -58,6 +58,13 @@ def is_admin(user_id):
     return user_id == ADMIN_ID
 
 
+def esc(text):
+    """Экранирует спецсимволы Markdown: _ * ` ["""
+    for ch in ["_", "*", "`", "["]:
+        text = str(text).replace(ch, f"\\{ch}")
+    return text
+
+
 # ─── ВСПОМОГАТЕЛЬНЫЕ ──────────────────────────────────────────────────────────
 def get_session(user_id):
     return sessions.get(user_id, {})
@@ -90,7 +97,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if uid in users and users[uid]["status"] == "approved":
         city = users[uid].get("city", "—")
         await update.message.reply_text(
-            f"Привет, {user.first_name}! 👋\n🏙 Город: *{city}*\n\nВыбери чек-лист:",
+            f"Привет, {esc(user.first_name)}! 👋\n🏙 Город: *{city}*\n\nВыбери чек-лист:",
             reply_markup=main_menu_keyboard(),
             parse_mode="Markdown"
         )
@@ -128,9 +135,9 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         ],
         [InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_{uid}")],
     ])
-    name_display = f"{user.first_name}"
+    name_display = esc(user.first_name)
     if user.username:
-        name_display += f" (@{user.username})"
+        name_display += f" (@{esc(user.username)})"
 
     await ctx.bot.send_message(
         chat_id=ADMIN_ID,
@@ -166,7 +173,7 @@ async def handle_admin_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             save_users(users)
             name = users[uid]["name"]
             await query.edit_message_text(
-                f"✅ Сотрудник *{name}* одобрен\n🏙 Город: *{city}*",
+                f"✅ Сотрудник *{esc(name)}* одобрен\n🏙 Город: *{city}*",
                 parse_mode="Markdown"
             )
             await ctx.bot.send_message(
@@ -183,7 +190,7 @@ async def handle_admin_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             name = users[uid]["name"]
             users[uid]["status"] = "rejected"
             save_users(users)
-            await query.edit_message_text(f"❌ Сотрудник *{name}* отклонён.", parse_mode="Markdown")
+            await query.edit_message_text(f"❌ Сотрудник *{esc(name)}* отклонён.", parse_mode="Markdown")
             await ctx.bot.send_message(
                 chat_id=int(uid),
                 text="❌ К сожалению, в доступе отказано. Обратитесь к руководителю."
@@ -195,7 +202,7 @@ async def handle_admin_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             name = users[uid]["name"]
             del users[uid]
             save_users(users)
-            await query.edit_message_text(f"🗑 Сотрудник *{name}* удалён.", parse_mode="Markdown")
+            await query.edit_message_text(f"🗑 Сотрудник *{esc(name)}* удалён.", parse_mode="Markdown")
             try:
                 await ctx.bot.send_message(
                     chat_id=int(uid),
@@ -216,8 +223,8 @@ async def staff_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = "👥 *Сотрудники с доступом:*\n\n"
     if approved:
         for uid, u in approved.items():
-            uname = f"@{u['username']}" if u.get("username") else "—"
-            text += f"• {u['name']} ({uname}) — {u.get('city', '—')}\n"
+            uname = f"@{esc(u['username'])}" if u.get("username") else "—"
+            text += f"• {esc(u['name'])} ({uname}) — {u.get('city', '—')}\n"
     else:
         text += "_Нет одобренных сотрудников_\n"
 
@@ -231,8 +238,8 @@ async def staff_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if pending:
         text += f"\n⏳ *Ожидают одобрения: {len(pending)}*\n"
         for uid, u in pending.items():
-            uname = f"@{u['username']}" if u.get("username") else "—"
-            text += f"• {u['name']} ({uname})\n"
+            uname = f"@{esc(u['username'])}" if u.get("username") else "—"
+            text += f"• {esc(u['name'])} ({uname})\n"
             keyboard.append([
                 InlineKeyboardButton(f"✅ {u['name']} (Гатчина)", callback_data=f"approve_{uid}_Гатчина"),
                 InlineKeyboardButton(f"✅ (Всеволожск)", callback_data=f"approve_{uid}_Всеволожск"),
