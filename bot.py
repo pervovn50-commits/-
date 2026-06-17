@@ -23,10 +23,11 @@ USERS_FILE = "users.json"  # Хранилище пользователей
     MAIN_MENU,
     DOING_OPEN, OPEN_PHOTO,
     DOING_CLOSE, CLOSE_PHOTO_SHIPMENT, CLOSE_PHOTO_RECEPTION, CLOSE_PHOTO_PVZ,
+    CLOSE_SUPPLIES, CLOSE_SUPPLIES_COMMENT,
     DOING_CLEAN, CLEAN_PHOTOS,
     DOING_INVENTORY, INVENTORY_INPUT, INVENTORY_PHOTO,
     WAITING_ANY_PHOTO,
-) = range(13)
+) = range(15)
 
 # ─── ХРАНИЛИЩЕ ────────────────────────────────────────────────────────────────
 sessions = {}  # { user_id: {...} }
@@ -281,13 +282,13 @@ async def main_menu_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if action == "menu_open":
         set_session(user_id, {**base_session, "type": "open"})
         await query.edit_message_text(
-            f"🌅 *ОТКРЫТИЕ ПВЗ*\n🏙 {city}\n\n"
+            f"🌅 ОТКРЫТИЕ ПВЗ\n🏙 {city}\n\n"
             "Нажми кнопку, чтобы зафиксировать открытие смены.\n"
             "Затем прикрепи обязательное фото.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("✅ Открываю смену!", callback_data="open_confirm")],
-            ]),
-            parse_mode="Markdown"
+                [InlineKeyboardButton("« Назад в меню", callback_data="back_to_main_menu")],
+            ])
         )
         return DOING_OPEN
 
@@ -296,15 +297,15 @@ async def main_menu_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                                "all_shipped": None,
                                "photos": {"shipment": None, "reception": None, "pvz": None}})
         await query.edit_message_text(
-            f"🌙 *ЗАКРЫТИЕ ПВЗ*\n🏙 {city}\n\n"
+            f"🌙 ЗАКРЫТИЕ ПВЗ\n🏙 {city}\n\n"
             "Все посылки отгружены?",
             reply_markup=InlineKeyboardMarkup([
                 [
                     InlineKeyboardButton("✅ Да, все отгружены", callback_data="shipped_yes"),
                     InlineKeyboardButton("❌ Нет", callback_data="shipped_no"),
-                ]
-            ]),
-            parse_mode="Markdown"
+                ],
+                [InlineKeyboardButton("« Назад в меню", callback_data="close_back_to_menu")],
+            ])
         )
         return DOING_CLOSE
 
@@ -317,11 +318,21 @@ async def main_menu_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         set_session(user_id, {**base_session, "type": "inventory",
                                "found": None, "not_found": None, "photo": None})
         await query.edit_message_text(
-            f"📦 *ИНВЕНТАРИЗАЦИЯ*\n🏙 {city}\n\n"
-            "Введи количество *найденных* посылок (цифрой):",
-            parse_mode="Markdown"
+            f"📦 ИНВЕНТАРИЗАЦИЯ\n🏙 {city}\n\n"
+            "Введи количество найденных посылок (цифрой):",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("« Назад в меню", callback_data="back_to_main_menu")]
+            ])
         )
         return INVENTORY_INPUT
+
+    elif action == "back_to_main_menu":
+        sessions.pop(user_id, None)
+        await query.edit_message_text(
+            f"Привет, {esc(name)}! 👋\n🏙 Город: {city}\n\nВыбери чек-лист:",
+            reply_markup=main_menu_keyboard()
+        )
+        return MAIN_MENU
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -337,9 +348,11 @@ async def open_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     set_session(user_id, session)
 
     await query.edit_message_text(
-        "✅ Отлично! Теперь прикрепи фото — *обязательно*.\n\n"
+        "✅ Отлично! Теперь прикрепи фото — обязательно.\n\n"
         "📸 Отправь фото прямо сейчас:",
-        parse_mode="Markdown"
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("« Назад", callback_data="open_back")]
+        ])
     )
     return OPEN_PHOTO
 
@@ -348,8 +361,27 @@ async def open_receive_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     session = get_session(user_id)
 
+    if update.callback_query:
+        await update.callback_query.answer()
+        if update.callback_query.data == "open_back":
+            await update.callback_query.edit_message_text(
+                "🌅 ОТКРЫТИЕ ПВЗ\n\n"
+                "Нажми кнопку, чтобы зафиксировать открытие смены.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✅ Открываю смену!", callback_data="open_confirm")],
+                    [InlineKeyboardButton("« Назад в меню", callback_data="back_to_main_menu")],
+                ])
+            )
+            return DOING_OPEN
+        return OPEN_PHOTO
+
     if not update.message.photo:
-        await update.message.reply_text("📸 Нужно отправить фото!")
+        await update.message.reply_text(
+            "📸 Нужно отправить фото!",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("« Назад", callback_data="open_back")
+            ]])
+        )
         return OPEN_PHOTO
 
     session["open_photo"] = update.message.photo[-1].file_id
@@ -395,13 +427,22 @@ async def close_shipped(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     session = get_session(user_id)
 
+    if query.data == "close_back_to_menu":
+        sessions.pop(user_id, None)
+        await query.edit_message_text(
+            "Закрытие отменено. Выбери чек-лист:",
+            reply_markup=main_menu_keyboard()
+        )
+        return MAIN_MENU
+
     session["all_shipped"] = (query.data == "shipped_yes")
     set_session(user_id, session)
 
     await query.edit_message_text(
-        "📸 Прикрепи фото для закрытия смены.\n\n"
-        "Сначала отправь *фото страницы отгрузки*:",
-        parse_mode="Markdown"
+        "📸 Шаг 1 из 3 — отправь фото страницы ОТГРУЗКИ:",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("« Назад", callback_data="close_back_to_shipped")]
+        ])
     )
     return CLOSE_PHOTO_SHIPMENT
 
@@ -409,43 +450,200 @@ async def close_shipped(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def close_photo_shipment(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     session = get_session(user_id)
+
+    # Кнопка "Назад" через callback
+    if update.callback_query:
+        await update.callback_query.answer()
+        if update.callback_query.data == "close_back_to_shipped":
+            await update.callback_query.edit_message_text(
+                "📦 Все посылки отгружены?",
+                reply_markup=InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("✅ Да, все отгружены", callback_data="shipped_yes"),
+                        InlineKeyboardButton("❌ Нет", callback_data="shipped_no"),
+                    ],
+                    [InlineKeyboardButton("« Назад в меню", callback_data="close_back_to_menu")],
+                ])
+            )
+            return DOING_CLOSE
+        return CLOSE_PHOTO_SHIPMENT
+
     if not update.message.photo:
-        await update.message.reply_text("📸 Нужно отправить фото страницы отгрузки!")
+        await update.message.reply_text(
+            "📸 Нужно отправить фото страницы отгрузки!\n\nИли нажми «Назад»:",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("« Назад", callback_data="close_back_to_shipped")
+            ]])
+        )
         return CLOSE_PHOTO_SHIPMENT
     session["photos"]["shipment"] = update.message.photo[-1].file_id
     set_session(user_id, session)
-    await update.message.reply_text("✅ Принято! Теперь отправь *фото страницы приёмки*:", parse_mode="Markdown")
+    await update.message.reply_text(
+        "✅ Принято!\n\n📸 Шаг 2 из 3 — отправь фото страницы ПРИЁМКИ:",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("« Назад", callback_data="close_back_to_shipment")
+        ]])
+    )
     return CLOSE_PHOTO_RECEPTION
 
 
 async def close_photo_reception(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     session = get_session(user_id)
+
+    if update.callback_query:
+        await update.callback_query.answer()
+        if update.callback_query.data == "close_back_to_shipment":
+            session["photos"]["shipment"] = None
+            set_session(user_id, session)
+            await update.callback_query.edit_message_text(
+                "📸 Шаг 1 из 3 — отправь фото страницы ОТГРУЗКИ:",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("« Назад", callback_data="close_back_to_shipped")
+                ]])
+            )
+            return CLOSE_PHOTO_SHIPMENT
+        return CLOSE_PHOTO_RECEPTION
+
     if not update.message.photo:
-        await update.message.reply_text("📸 Нужно отправить фото страницы приёмки!")
+        await update.message.reply_text(
+            "📸 Нужно отправить фото страницы приёмки!\n\nИли нажми «Назад»:",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("« Назад", callback_data="close_back_to_shipment")
+            ]])
+        )
         return CLOSE_PHOTO_RECEPTION
     session["photos"]["reception"] = update.message.photo[-1].file_id
     set_session(user_id, session)
-    await update.message.reply_text("✅ Принято! Теперь отправь *фото ПВЗ в конце смены*:", parse_mode="Markdown")
+    await update.message.reply_text(
+        "✅ Принято!\n\n📸 Шаг 3 из 3 — отправь фото ПВЗ в конце смены:",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("« Назад", callback_data="close_back_to_reception")
+        ]])
+    )
     return CLOSE_PHOTO_PVZ
 
 
 async def close_photo_pvz(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     session = get_session(user_id)
+
+    if update.callback_query:
+        await update.callback_query.answer()
+        if update.callback_query.data == "close_back_to_reception":
+            session["photos"]["reception"] = None
+            set_session(user_id, session)
+            await update.callback_query.edit_message_text(
+                "📸 Шаг 2 из 3 — отправь фото страницы ПРИЁМКИ:",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("« Назад", callback_data="close_back_to_shipment")
+                ]])
+            )
+            return CLOSE_PHOTO_RECEPTION
+        return CLOSE_PHOTO_PVZ
+
     if not update.message.photo:
-        await update.message.reply_text("📸 Нужно отправить фото ПВЗ!")
+        await update.message.reply_text(
+            "📸 Нужно отправить фото ПВЗ!\n\nИли нажми «Назад»:",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("« Назад", callback_data="close_back_to_reception")
+            ]])
+        )
         return CLOSE_PHOTO_PVZ
     session["photos"]["pvz"] = update.message.photo[-1].file_id
     set_session(user_id, session)
-    await update.message.reply_text("✅ Все фото получены! Отправляю отчёт...")
-    await send_close_report(update, ctx, user_id)
+
+    # Спрашиваем про расходники
+    await update.message.reply_text(
+        "🗂 Все расходники есть?\n(скотч, пакеты, чековая лента и т.д.)",
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ Да, всё есть", callback_data="supplies_yes"),
+                InlineKeyboardButton("❌ Нет, не хватает", callback_data="supplies_no"),
+            ],
+            [InlineKeyboardButton("« Назад", callback_data="close_back_to_pvz")],
+        ])
+    )
+    return CLOSE_SUPPLIES
+
+
+async def close_supplies(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    session = get_session(user_id)
+
+    if query.data == "close_back_to_pvz":
+        session["photos"]["pvz"] = None
+        set_session(user_id, session)
+        await query.edit_message_text(
+            "📸 Шаг 3 из 3 — отправь фото ПВЗ в конце смены:",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("« Назад", callback_data="close_back_to_reception")
+            ]])
+        )
+        return CLOSE_PHOTO_PVZ
+
+    if query.data == "supplies_yes":
+        session["supplies_ok"] = True
+        session["supplies_comment"] = None
+        set_session(user_id, session)
+        await query.edit_message_text("✅ Отлично! Отправляю отчёт...")
+        await send_close_report(query.message, ctx, user_id)
+        return ConversationHandler.END
+
+    if query.data == "supplies_no":
+        session["supplies_ok"] = False
+        set_session(user_id, session)
+        await query.edit_message_text(
+            "📝 Напиши что именно не хватает:\n(например: скотч, пакеты, чековая лента)",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("« Назад", callback_data="supplies_back")
+            ]])
+        )
+        return CLOSE_SUPPLIES_COMMENT
+
+
+async def close_supplies_comment(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    session = get_session(user_id)
+
+    # Кнопка назад
+    if update.callback_query:
+        await update.callback_query.answer()
+        if update.callback_query.data == "supplies_back":
+            await update.callback_query.edit_message_text(
+                "🗂 Все расходники есть?",
+                reply_markup=InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("✅ Да, всё есть", callback_data="supplies_yes"),
+                        InlineKeyboardButton("❌ Нет, не хватает", callback_data="supplies_no"),
+                    ],
+                    [InlineKeyboardButton("« Назад", callback_data="close_back_to_pvz")],
+                ])
+            )
+            return CLOSE_SUPPLIES
+        return CLOSE_SUPPLIES_COMMENT
+
+    if not update.message.text:
+        await update.message.reply_text("✏️ Напиши текстом что не хватает:")
+        return CLOSE_SUPPLIES_COMMENT
+
+    session["supplies_comment"] = update.message.text.strip()
+    set_session(user_id, session)
+    await update.message.reply_text("✅ Записал! Отправляю отчёт...")
+    await send_close_report(update.message, ctx, user_id)
     return ConversationHandler.END
 
 
-async def send_close_report(update, ctx, user_id):
+async def send_close_report(message, ctx, user_id):
     session = get_session(user_id)
     shipped = "✅ Да" if session.get("all_shipped") else "❌ Нет"
+    supplies_ok = session.get("supplies_ok", True)
+    supplies_comment = session.get("supplies_comment")
+
+    supplies_line = "✅ Все расходники есть" if supplies_ok else f"❌ Не хватает расходников: {supplies_comment}"
+
     text = (
         f"{'─' * 30}\n"
         f"🌙 ЗАКРЫТИЕ ПВЗ\n"
@@ -456,11 +654,17 @@ async def send_close_report(update, ctx, user_id):
         f"📤 Отправлено: {now_str()}\n"
         f"{'─' * 30}\n"
         f"📦 Все посылки отгружены: {shipped}\n"
+        f"🗂 Расходники: {supplies_line}\n"
         f"{'─' * 30}\n"
         f"📸 Фото отгрузки: ✅\n"
         f"📸 Фото приёмки: ✅\n"
         f"📸 Фото ПВЗ: ✅"
     )
+
+    # Акцент если не хватает расходников
+    if not supplies_ok:
+        text += f"\n\n⚠️ ВНИМАНИЕ! Сотрудник сообщил о нехватке расходников!\nНужно: {supplies_comment}"
+
     await ctx.bot.send_message(chat_id=REPORT_CHAT_ID, text=text)
 
     from telegram import InputMediaPhoto
@@ -475,7 +679,7 @@ async def send_close_report(update, ctx, user_id):
     if media:
         await ctx.bot.send_media_group(chat_id=REPORT_CHAT_ID, media=media)
 
-    await update.message.reply_text(
+    await message.reply_text(
         "✅ Отчёт о закрытии отправлен! До завтра! 👋\n\n/start — вернуться в меню"
     )
     sessions.pop(user_id, None)
@@ -513,8 +717,10 @@ async def show_clean_checklist(update, ctx, user_id, edit=False):
     elif all_marked and not has_enough_photos:
         keyboard.append([InlineKeyboardButton(f"⚠️ Нужно минимум 3 фото (есть {len(photos)})", callback_data="noop")])
 
+    keyboard.append([InlineKeyboardButton("« Назад в меню", callback_data="back_to_main_menu")])
+
     text = (
-        f"🧹 *УБОРКА И ЧИСТОТА*\n"
+        f"🧹 УБОРКА И ЧИСТОТА\n"
         f"🏙 {session['city']}\n\n"
         f"✅ {completed} | ❌ {failed} | ⬜ {len(CLEAN_ITEMS) - len(done)}\n"
         f"📸 Фото: {len(photos)} (нужно минимум 3)\n\n"
@@ -523,7 +729,7 @@ async def show_clean_checklist(update, ctx, user_id, edit=False):
 
     msg = update.callback_query.message if update.callback_query else update.message
     if edit and update.callback_query:
-        await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
     else:
         await msg.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
     return DOING_CLEAN
@@ -565,8 +771,8 @@ async def clean_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("« Назад", callback_data="clean_back")],
         ])
         await query.edit_message_text(
-            f"*{CLEAN_ITEMS[idx]}*\n\nКак отметить?",
-            reply_markup=kb, parse_mode="Markdown"
+            f"{CLEAN_ITEMS[idx]}\n\nКак отметить?",
+            reply_markup=kb
         )
         return DOING_CLEAN
 
@@ -656,36 +862,91 @@ async def inventory_input(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if session.get("found") is None:
         if not text.isdigit():
-            await update.message.reply_text("⚠️ Введи число! Сколько посылок *найдено*?", parse_mode="Markdown")
+            await update.message.reply_text(
+                "⚠️ Введи число! Сколько посылок найдено?",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("« Назад в меню", callback_data="back_to_main_menu")
+                ]])
+            )
             return INVENTORY_INPUT
         session["found"] = int(text)
         set_session(user_id, session)
-        await update.message.reply_text("✅ Принято! Теперь введи количество *НЕ найденных* посылок:", parse_mode="Markdown")
+        await update.message.reply_text(
+            "✅ Принято! Теперь введи количество НЕ найденных посылок:",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("« Назад", callback_data="inventory_back_found")
+            ]])
+        )
         return INVENTORY_INPUT
 
     if session.get("not_found") is None:
         if not text.isdigit():
-            await update.message.reply_text("⚠️ Введи число! Сколько посылок *не найдено*?", parse_mode="Markdown")
+            await update.message.reply_text(
+                "⚠️ Введи число! Сколько посылок не найдено?",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("« Назад", callback_data="inventory_back_found")
+                ]])
+            )
             return INVENTORY_INPUT
         session["not_found"] = int(text)
         set_session(user_id, session)
         await update.message.reply_text(
             f"✅ Записал!\n\n"
-            f"📦 Найдено: *{session['found']}*\n"
-            f"❌ Не найдено: *{session['not_found']}*\n\n"
-            f"📸 Теперь прикрепи *обязательное фото* инвентаризации:",
-            parse_mode="Markdown"
+            f"📦 Найдено: {session['found']}\n"
+            f"❌ Не найдено: {session['not_found']}\n\n"
+            f"📸 Теперь прикрепи обязательное фото инвентаризации:",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("« Назад", callback_data="inventory_back_notfound")
+            ]])
         )
         return INVENTORY_PHOTO
 
     return INVENTORY_INPUT
 
 
+async def inventory_back(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    session = get_session(user_id)
+
+    if query.data == "inventory_back_found":
+        session["found"] = None
+        set_session(user_id, session)
+        await query.edit_message_text(
+            "📦 ИНВЕНТАРИЗАЦИЯ\n\nВведи количество найденных посылок (цифрой):",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("« Назад в меню", callback_data="back_to_main_menu")
+            ]])
+        )
+        return INVENTORY_INPUT
+
+    if query.data == "inventory_back_notfound":
+        session["not_found"] = None
+        set_session(user_id, session)
+        await query.edit_message_text(
+            "Введи количество НЕ найденных посылок:",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("« Назад", callback_data="inventory_back_found")
+            ]])
+        )
+        return INVENTORY_INPUT
+
+
 async def inventory_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     session = get_session(user_id)
+
+    if update.callback_query:
+        return await inventory_back(update, ctx)
+
     if not update.message.photo:
-        await update.message.reply_text("📸 Нужно отправить фото для инвентаризации!")
+        await update.message.reply_text(
+            "📸 Нужно отправить фото для инвентаризации!",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("« Назад", callback_data="inventory_back_notfound")
+            ]])
+        )
         return INVENTORY_PHOTO
     session["photo"] = update.message.photo[-1].file_id
     set_session(user_id, session)
@@ -817,28 +1078,41 @@ def main():
         ],
         states={
             MAIN_MENU: [
-                CallbackQueryHandler(main_menu_callback, pattern="^menu_"),
+                CallbackQueryHandler(main_menu_callback, pattern="^(menu_|back_to_main_menu)"),
             ],
             DOING_OPEN: [
                 CallbackQueryHandler(open_confirm, pattern="^open_confirm$"),
+                CallbackQueryHandler(main_menu_callback, pattern="^back_to_main_menu$"),
             ],
             OPEN_PHOTO: [
                 MessageHandler(filters.PHOTO, open_receive_photo),
+                CallbackQueryHandler(open_receive_photo, pattern="^open_back$"),
             ],
             DOING_CLOSE: [
-                CallbackQueryHandler(close_shipped, pattern="^shipped_"),
+                CallbackQueryHandler(close_shipped, pattern="^(shipped_|close_back_to_menu)"),
             ],
             CLOSE_PHOTO_SHIPMENT: [
                 MessageHandler(filters.PHOTO, close_photo_shipment),
+                CallbackQueryHandler(close_photo_shipment, pattern="^close_back_to_shipped$"),
             ],
             CLOSE_PHOTO_RECEPTION: [
                 MessageHandler(filters.PHOTO, close_photo_reception),
+                CallbackQueryHandler(close_photo_reception, pattern="^close_back_to_shipment$"),
             ],
             CLOSE_PHOTO_PVZ: [
                 MessageHandler(filters.PHOTO, close_photo_pvz),
+                CallbackQueryHandler(close_photo_pvz, pattern="^close_back_to_reception$"),
+            ],
+            CLOSE_SUPPLIES: [
+                CallbackQueryHandler(close_supplies, pattern="^(supplies_|close_back_to_pvz)"),
+            ],
+            CLOSE_SUPPLIES_COMMENT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, close_supplies_comment),
+                CallbackQueryHandler(close_supplies_comment, pattern="^supplies_back$"),
             ],
             DOING_CLEAN: [
                 CallbackQueryHandler(clean_callback, pattern="^clean_"),
+                CallbackQueryHandler(main_menu_callback, pattern="^back_to_main_menu$"),
             ],
             CLEAN_PHOTOS: [
                 MessageHandler(filters.PHOTO, clean_receive_photo),
@@ -846,9 +1120,12 @@ def main():
             ],
             INVENTORY_INPUT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, inventory_input),
+                CallbackQueryHandler(inventory_back, pattern="^inventory_back_found$"),
+                CallbackQueryHandler(main_menu_callback, pattern="^back_to_main_menu$"),
             ],
             INVENTORY_PHOTO: [
                 MessageHandler(filters.PHOTO, inventory_photo),
+                CallbackQueryHandler(inventory_photo, pattern="^inventory_back_notfound$"),
             ],
         },
         fallbacks=[
