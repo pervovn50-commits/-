@@ -423,9 +423,8 @@ async def send_open_report(update, ctx, user_id):
         f"{'─' * 30}\n"
         f"🌅 ОТКРЫТИЕ ПВЗ\n"
         f"{'─' * 30}\n"
-        f"👤 {session['name']} (@{session['username']})\n"
+        f"👤 {session['name']}\n"
         f"🏙 Город: {session['city']}\n"
-        f"🕐 Время открытия: {session['started_at']}\n"
         f"{'─' * 30}\n"
         f"✅ Смена открыта\n"
         f"📸 Фото прилагается"
@@ -671,10 +670,8 @@ async def send_close_report(message, ctx, user_id):
         f"{'─' * 30}\n"
         f"🌙 ЗАКРЫТИЕ ПВЗ\n"
         f"{'─' * 30}\n"
-        f"👤 {session['name']} (@{session['username']})\n"
+        f"👤 {session['name']}\n"
         f"🏙 Город: {session['city']}\n"
-        f"🕐 Время: {session['started_at']}\n"
-        f"📤 Отправлено: {now_str()}\n"
         f"{'─' * 30}\n"
         f"📦 Все посылки отгружены: {shipped}\n"
         f"🗂 Расходники: {supplies_line}\n"
@@ -847,10 +844,8 @@ async def send_clean_report(query_or_update, ctx, user_id):
         f"{'─' * 30}",
         f"🧹 УБОРКА И ЧИСТОТА",
         f"{'─' * 30}",
-        f"👤 {session['name']} (@{session['username']})",
+        f"👤 {session['name']}",
         f"🏙 Город: {session['city']}",
-        f"🕐 {session['started_at']}",
-        f"📤 Отправлено: {now_str()}",
         f"{'─' * 30}",
         f"📋 Результат: {completed}/{len(CLEAN_ITEMS)}",
         "",
@@ -988,10 +983,8 @@ async def send_inventory_report(update, ctx, user_id):
         f"{'─' * 30}\n"
         f"📦 ИНВЕНТАРИЗАЦИЯ\n"
         f"{'─' * 30}\n"
-        f"👤 {session['name']} (@{session['username']})\n"
+        f"👤 {session['name']}\n"
         f"🏙 Город: {session['city']}\n"
-        f"🕐 {session['started_at']}\n"
-        f"📤 Отправлено: {now_str()}\n"
         f"{'─' * 30}\n"
         f"📦 Всего проверено: {total}\n"
         f"✅ Найдено: {found}\n"
@@ -1102,10 +1095,9 @@ async def break_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         f"{'─' * 30}\n"
         f"☕ ПЕРЕРЫВ НАЧАТ\n"
         f"{'─' * 30}\n"
-        f"👤 {name} {uname_str}\n"
+        f"👤 {name}\n"
         f"🏙 Город: {city}\n"
-        f"🕐 Время начала: {started_str}\n"
-        f"⏳ Максимум до: {(started_at + __import__('datetime').timedelta(hours=3, minutes=15)).strftime('%H:%M')}\n"
+        f"⏳ Максимум: 15 минут\n"
         f"{'─' * 30}"
     )
     await ctx.bot.send_message(chat_id=REPORT_CHAT_ID, text=report_text)
@@ -1127,11 +1119,8 @@ async def break_end(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     now_utc = datetime.now(timezone.utc)
     duration = int((now_utc - started_at).total_seconds() / 60)
     seconds_extra = int((now_utc - started_at).total_seconds() % 60)
-    ended_str = (now_utc + __import__('datetime').timedelta(hours=3)).strftime("%H:%M")
     name = break_data["name"]
-    username = break_data.get("username", "")
     city = break_data["city"]
-    started_str = break_data["started_str"]
 
     # Отменяем таймер если ещё не сработал
     current_jobs = ctx.job_queue.get_jobs_by_name(f"break_{user_id}")
@@ -1145,8 +1134,6 @@ async def break_end(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if overdue:
         employee_msg = (
             f"⚠️ Перерыв завершён с превышением!\n\n"
-            f"🕐 Начало: {started_str}\n"
-            f"🕑 Конец: {ended_str}\n"
             f"⏱ Длительность: {duration_str}\n"
             f"❌ Превышение: {duration - 15} мин {seconds_extra} сек\n\n"
             f"/start — вернуться в меню"
@@ -1154,26 +1141,21 @@ async def break_end(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     else:
         employee_msg = (
             f"✅ Перерыв завершён!\n\n"
-            f"🕐 Начало: {started_str}\n"
-            f"🕑 Конец: {ended_str}\n"
             f"⏱ Длительность: {duration_str}\n\n"
             f"/start — вернуться в меню"
         )
     await query.edit_message_text(employee_msg)
 
     # Отчёт в групповой чат
-    uname_str = f"@{username}" if username else ""
     if overdue:
         report_text = (
             f"{'━' * 30}\n"
-            f"⚠️ ВНИМАНИЕ! ПЕРЕРЫВ ЗАВЕРШЁН С ПРЕВЫШЕНИЕМ!\n"
+            f"⚠️ ВНИМАНИЕ! ПЕРЕРЫВ С ПРЕВЫШЕНИЕМ!\n"
             f"{'━' * 30}\n"
-            f"👤 {name} {uname_str}\n"
+            f"👤 {name}\n"
             f"🏙 Город: {city}\n"
-            f"🕐 Начало: {started_str}\n"
-            f"🕑 Конец: {ended_str}\n"
             f"⏱ Длительность: {duration_str}\n"
-            f"❌ Превышение нормы: {duration - 15} мин {seconds_extra} сек\n"
+            f"❌ Превышение: {duration - 15} мин {seconds_extra} сек\n"
             f"{'━' * 30}\n"
             f"⚠️ Сотрудник задержался на перерыве!"
         )
@@ -1182,10 +1164,8 @@ async def break_end(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             f"{'─' * 30}\n"
             f"☕ ПЕРЕРЫВ ЗАВЕРШЁН\n"
             f"{'─' * 30}\n"
-            f"👤 {name} {uname_str}\n"
+            f"👤 {name}\n"
             f"🏙 Город: {city}\n"
-            f"🕐 Начало: {started_str}\n"
-            f"🕑 Конец: {ended_str}\n"
             f"⏱ Длительность: {duration_str} ✅\n"
             f"{'─' * 30}"
         )
@@ -1213,7 +1193,6 @@ async def break_timeout(ctx: ContextTypes.DEFAULT_TYPE):
             chat_id=user_id,
             text=(
                 f"🚨 ПЕРЕРЫВ УЖЕ 15 МИНУТ!\n\n"
-                f"Ты начал перерыв в {started_str}.\n"
                 f"Уже прошло 15 минут — пора возвращаться!\n\n"
                 f"Нажми кнопку когда вернёшься:"
             ),
@@ -1224,14 +1203,13 @@ async def break_timeout(ctx: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.warning(f"Не удалось уведомить сотрудника {user_id}: {e}")
 
-    # Уведомление в групповой чат — с особым акцентом
+    # Уведомление в групповой чат
     report_text = (
         f"{'━' * 30}\n"
         f"🚨 ПЕРЕРЫВ НЕ ЗАВЕРШЁН!\n"
         f"{'━' * 30}\n"
-        f"👤 {name} {uname_str}\n"
+        f"👤 {name}\n"
         f"🏙 Город: {city}\n"
-        f"🕐 Начало: {started_str}\n"
         f"⏱ Прошло: 15 минут\n"
         f"{'━' * 30}\n"
         f"Сотрудник не вернулся с перерыва!\n"
@@ -1246,20 +1224,15 @@ async def break_timeout(ctx: ContextTypes.DEFAULT_TYPE):
 
 # ─── НАПОМИНАНИЕ ПО ПН И ЧТ РАЗ В ДВЕ НЕДЕЛИ В 12:00 МСК ───────────────────
 async def send_inventory_reminder(ctx: ContextTypes.DEFAULT_TYPE):
-    now_msk = datetime.now(timezone.utc).astimezone(
-        timezone(datetime.now(timezone.utc).astimezone().utcoffset())
-    )
-    # Используем московское время через смещение UTC+3
     from datetime import timedelta
     now_msk = datetime.now(timezone.utc) + timedelta(hours=3)
-
     weekday = now_msk.weekday()   # 0=пн, 3=чт
     week_number = now_msk.isocalendar()[1]
 
-    # Только понедельник (0) или четверг (3), и только чётные недели
+    # Только понедельник (0) или четверг (3), и только нечётные недели
     if weekday not in (0, 3):
         return
-    if week_number % 2 != 0:
+    if week_number % 2 == 0:
         return
 
     users = load_users()
@@ -1272,11 +1245,12 @@ async def send_inventory_reminder(ctx: ContextTypes.DEFAULT_TYPE):
             try:
                 await ctx.bot.send_message(
                     chat_id=int(uid),
-                    text=f"⏰ *Напоминание об инвентаризации!*\n\n"
-                         f"🏙 {u.get('city', '—')} | 📅 {today} ({day_name})\n\n"
-                         f"Пора провести инвентаризацию посылок.\n"
-                         f"Нажми /start и выбери 📦 Инвентаризация",
-                    parse_mode="Markdown"
+                    text=(
+                        f"⏰ Напоминание об инвентаризации!\n\n"
+                        f"🏙 {u.get('city', '—')} | {today} ({day_name})\n\n"
+                        f"Пора провести инвентаризацию посылок.\n"
+                        f"Нажми /start и выбери Инвентаризация"
+                    )
                 )
                 count += 1
             except Exception as e:
@@ -1300,6 +1274,8 @@ def main():
     conv = ConversationHandler(
         entry_points=[
             CommandHandler("start", start),
+            CallbackQueryHandler(break_start, pattern="^menu_break$"),
+            CallbackQueryHandler(break_end, pattern="^break_end$"),
             CallbackQueryHandler(main_menu_callback, pattern="^menu_"),
         ],
         states={
