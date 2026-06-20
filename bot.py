@@ -27,10 +27,12 @@ USERS_FILE = "users.json"  # Хранилище пользователей
     DOING_CLEAN, CLEAN_PHOTOS,
     DOING_INVENTORY, INVENTORY_INPUT, INVENTORY_PHOTO,
     WAITING_ANY_PHOTO,
-) = range(15)
+    ENTERING_NAME,
+) = range(16)
 
 # ─── ХРАНИЛИЩЕ ────────────────────────────────────────────────────────────────
 sessions = {}  # { user_id: {...} }
+active_breaks = {}  # { user_id: {"started_at": datetime, "job_name": str} }
 
 
 def load_users():
@@ -85,6 +87,7 @@ def main_menu_keyboard():
         [InlineKeyboardButton("🌙 Закрытие ПВЗ", callback_data="menu_close")],
         [InlineKeyboardButton("🧹 Уборка и чистота", callback_data="menu_clean")],
         [InlineKeyboardButton("📦 Инвентаризация", callback_data="menu_inventory")],
+        [InlineKeyboardButton("☕ Перерыв", callback_data="menu_break")],
     ])
 
 
@@ -97,24 +100,46 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     # Если уже одобрен — сразу главное меню
     if uid in users and users[uid]["status"] == "approved":
         city = users[uid].get("city", "—")
+        real_name = users[uid].get("name", user.first_name)
         await update.message.reply_text(
-            f"Привет, {esc(user.first_name)}! 👋\n🏙 Город: *{city}*\n\nВыбери чек-лист:",
-            reply_markup=main_menu_keyboard(),
-            parse_mode="Markdown"
+            f"Привет, {esc(real_name)}! 👋\n🏙 Город: {city}\n\nВыбери чек-лист:",
+            reply_markup=main_menu_keyboard()
         )
         return MAIN_MENU
 
-    # Если уже ожидает — напомнить
+    # Если уже ожидает одобрения
     if uid in users and users[uid]["status"] == "pending":
         await update.message.reply_text(
             "⏳ Твоя заявка уже отправлена, ожидай одобрения от руководителя."
         )
         return ConversationHandler.END
 
-    # Новый пользователь — отправляем заявку
+    # Новый пользователь — спрашиваем имя
+    await update.message.reply_text(
+        "👋 Привет! Добро пожаловать в бот ПВЗ.\n\n"
+        "Для регистрации напиши своё настоящее имя и фамилию:\n"
+        "(например: Мария Иванова)"
+    )
+    return ENTERING_NAME
+
+
+async def receive_name(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Получаем настоящее имя сотрудника и отправляем заявку"""
+    user = update.effective_user
+    uid = str(user.id)
+    real_name = update.message.text.strip()
+
+    # Минимальная валидация
+    if len(real_name) < 2 or len(real_name) > 60:
+        await update.message.reply_text(
+            "⚠️ Имя должно быть от 2 до 60 символов. Попробуй ещё раз:"
+        )
+        return ENTERING_NAME
+
+    users = load_users()
     users[uid] = {
         "status": "pending",
-        "name": user.first_name,
+        "name": real_name,
         "username": user.username or "",
         "city": None,
         "registered_at": now_str(),
@@ -122,33 +147,31 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     save_users(users)
 
     await update.message.reply_text(
-        "👋 Привет!\n\n"
-        "Твоя заявка на доступ к боту отправлена руководителю.\n"
-        "Как только тебя одобрят — сможешь начать работу.\n\n"
-        "⏳ Ожидай сообщения..."
+        f"✅ Отлично, {esc(real_name)}!\n\n"
+        "Заявка на доступ отправлена руководителю.\n"
+        "Как только тебя одобрят — получишь уведомление.\n\n"
+        "⏳ Ожидай..."
     )
 
     # Уведомляем администратора
+    uname_str = f"@{user.username}" if user.username else "без username"
     keyboard = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton(f"✅ Одобрить (Гатчина)", callback_data=f"approve_{uid}_Гатчина"),
-            InlineKeyboardButton(f"✅ Одобрить (Всеволожск)", callback_data=f"approve_{uid}_Всеволожск"),
+            InlineKeyboardButton("✅ Одобрить (Гатчина)", callback_data=f"approve_{uid}_Гатчина"),
+            InlineKeyboardButton("✅ Одобрить (Всеволожск)", callback_data=f"approve_{uid}_Всеволожск"),
         ],
         [InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_{uid}")],
     ])
-    name_display = esc(user.first_name)
-    if user.username:
-        name_display += f" (@{esc(user.username)})"
 
     await ctx.bot.send_message(
         chat_id=ADMIN_ID,
-        text=f"🔔 *Новая заявка на доступ*\n\n"
-             f"👤 {name_display}\n"
-             f"🆔 ID: `{user.id}`\n"
+        text=f"🔔 Новая заявка на доступ\n\n"
+             f"👤 Имя: {real_name}\n"
+             f"📱 Telegram: {uname_str}\n"
+             f"🆔 ID: {user.id}\n"
              f"📅 {now_str()}\n\n"
              f"Выбери город и одобри или отклони:",
         reply_markup=keyboard,
-        parse_mode="Markdown"
     )
     return ConversationHandler.END
 
@@ -1018,6 +1041,209 @@ async def cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# ☕ ПЕРЕРЫВ
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def break_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Сотрудник нажал кнопку Перерыв"""
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+
+    if not is_approved(user_id):
+        await query.message.reply_text("⛔ У вас нет доступа.")
+        return MAIN_MENU
+
+    # Если перерыв уже активен
+    if user_id in active_breaks:
+        started = active_breaks[user_id]["started_at"]
+        diff = int((datetime.now(timezone.utc) - started).total_seconds() / 60)
+        await query.answer(f"⏳ Перерыв уже идёт {diff} мин.", show_alert=True)
+        return MAIN_MENU
+
+    user_info = get_user(user_id)
+    name = user_info.get("name", "Сотрудник")
+    username = user_info.get("username", "")
+    city = user_info.get("city", "—")
+    started_at = datetime.now(timezone.utc)
+    started_str = (started_at + __import__('datetime').timedelta(hours=3)).strftime("%H:%M")
+
+    active_breaks[user_id] = {
+        "started_at": started_at,
+        "name": name,
+        "username": username,
+        "city": city,
+        "started_str": started_str,
+    }
+
+    # Планируем напоминание через 15 минут
+    job = ctx.job_queue.run_once(
+        break_timeout,
+        when=15 * 60,
+        data={"user_id": user_id},
+        name=f"break_{user_id}",
+    )
+    active_breaks[user_id]["job_name"] = f"break_{user_id}"
+
+    # Сообщение сотруднику
+    await query.edit_message_text(
+        f"☕ Перерыв начат в {started_str}\n\n"
+        "Максимальное время: 15 минут.\n"
+        "Нажми кнопку когда вернёшься:",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Перерыв завершён, я вернулся!", callback_data="break_end")]
+        ])
+    )
+
+    # Уведомление в групповой чат
+    uname_str = f"@{username}" if username else ""
+    report_text = (
+        f"{'─' * 30}\n"
+        f"☕ ПЕРЕРЫВ НАЧАТ\n"
+        f"{'─' * 30}\n"
+        f"👤 {name} {uname_str}\n"
+        f"🏙 Город: {city}\n"
+        f"🕐 Время начала: {started_str}\n"
+        f"⏳ Максимум до: {(started_at + __import__('datetime').timedelta(hours=3, minutes=15)).strftime('%H:%M')}\n"
+        f"{'─' * 30}"
+    )
+    await ctx.bot.send_message(chat_id=REPORT_CHAT_ID, text=report_text)
+    return MAIN_MENU
+
+
+async def break_end(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Сотрудник завершил перерыв"""
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+
+    if user_id not in active_breaks:
+        await query.edit_message_text("ℹ️ Активного перерыва не найдено.\n\n/start — в меню")
+        return MAIN_MENU
+
+    break_data = active_breaks.pop(user_id)
+    started_at = break_data["started_at"]
+    now_utc = datetime.now(timezone.utc)
+    duration = int((now_utc - started_at).total_seconds() / 60)
+    seconds_extra = int((now_utc - started_at).total_seconds() % 60)
+    ended_str = (now_utc + __import__('datetime').timedelta(hours=3)).strftime("%H:%M")
+    name = break_data["name"]
+    username = break_data.get("username", "")
+    city = break_data["city"]
+    started_str = break_data["started_str"]
+
+    # Отменяем таймер если ещё не сработал
+    current_jobs = ctx.job_queue.get_jobs_by_name(f"break_{user_id}")
+    for job in current_jobs:
+        job.schedule_removal()
+
+    overdue = duration > 15
+    duration_str = f"{duration} мин {seconds_extra} сек"
+
+    # Сообщение сотруднику
+    if overdue:
+        employee_msg = (
+            f"⚠️ Перерыв завершён с превышением!\n\n"
+            f"🕐 Начало: {started_str}\n"
+            f"🕑 Конец: {ended_str}\n"
+            f"⏱ Длительность: {duration_str}\n"
+            f"❌ Превышение: {duration - 15} мин {seconds_extra} сек\n\n"
+            f"/start — вернуться в меню"
+        )
+    else:
+        employee_msg = (
+            f"✅ Перерыв завершён!\n\n"
+            f"🕐 Начало: {started_str}\n"
+            f"🕑 Конец: {ended_str}\n"
+            f"⏱ Длительность: {duration_str}\n\n"
+            f"/start — вернуться в меню"
+        )
+    await query.edit_message_text(employee_msg)
+
+    # Отчёт в групповой чат
+    uname_str = f"@{username}" if username else ""
+    if overdue:
+        report_text = (
+            f"{'━' * 30}\n"
+            f"⚠️ ВНИМАНИЕ! ПЕРЕРЫВ ЗАВЕРШЁН С ПРЕВЫШЕНИЕМ!\n"
+            f"{'━' * 30}\n"
+            f"👤 {name} {uname_str}\n"
+            f"🏙 Город: {city}\n"
+            f"🕐 Начало: {started_str}\n"
+            f"🕑 Конец: {ended_str}\n"
+            f"⏱ Длительность: {duration_str}\n"
+            f"❌ Превышение нормы: {duration - 15} мин {seconds_extra} сек\n"
+            f"{'━' * 30}\n"
+            f"⚠️ Сотрудник задержался на перерыве!"
+        )
+    else:
+        report_text = (
+            f"{'─' * 30}\n"
+            f"☕ ПЕРЕРЫВ ЗАВЕРШЁН\n"
+            f"{'─' * 30}\n"
+            f"👤 {name} {uname_str}\n"
+            f"🏙 Город: {city}\n"
+            f"🕐 Начало: {started_str}\n"
+            f"🕑 Конец: {ended_str}\n"
+            f"⏱ Длительность: {duration_str} ✅\n"
+            f"{'─' * 30}"
+        )
+    await ctx.bot.send_message(chat_id=REPORT_CHAT_ID, text=report_text)
+    return MAIN_MENU
+
+
+async def break_timeout(ctx: ContextTypes.DEFAULT_TYPE):
+    """Срабатывает через 15 минут если перерыв не завершён"""
+    user_id = ctx.job.data["user_id"]
+
+    if user_id not in active_breaks:
+        return  # уже завершён вручную
+
+    break_data = active_breaks[user_id]
+    name = break_data["name"]
+    username = break_data.get("username", "")
+    city = break_data["city"]
+    started_str = break_data["started_str"]
+    uname_str = f"@{username}" if username else ""
+
+    # Уведомление сотруднику
+    try:
+        await ctx.bot.send_message(
+            chat_id=user_id,
+            text=(
+                f"🚨 ПЕРЕРЫВ УЖЕ 15 МИНУТ!\n\n"
+                f"Ты начал перерыв в {started_str}.\n"
+                f"Уже прошло 15 минут — пора возвращаться!\n\n"
+                f"Нажми кнопку когда вернёшься:"
+            ),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Я вернулся!", callback_data="break_end")]
+            ])
+        )
+    except Exception as e:
+        logger.warning(f"Не удалось уведомить сотрудника {user_id}: {e}")
+
+    # Уведомление в групповой чат — с особым акцентом
+    report_text = (
+        f"{'━' * 30}\n"
+        f"🚨 ПЕРЕРЫВ НЕ ЗАВЕРШЁН!\n"
+        f"{'━' * 30}\n"
+        f"👤 {name} {uname_str}\n"
+        f"🏙 Город: {city}\n"
+        f"🕐 Начало: {started_str}\n"
+        f"⏱ Прошло: 15 минут\n"
+        f"{'━' * 30}\n"
+        f"Сотрудник не вернулся с перерыва!\n"
+        f"Требуется внимание руководителя!\n"
+        f"{'━' * 30}"
+    )
+    try:
+        await ctx.bot.send_message(chat_id=REPORT_CHAT_ID, text=report_text)
+    except Exception as e:
+        logger.warning(f"Не удалось отправить уведомление в чат: {e}")
+
+
 # ─── НАПОМИНАНИЕ ПО ПН И ЧТ РАЗ В ДВЕ НЕДЕЛИ В 12:00 МСК ───────────────────
 async def send_inventory_reminder(ctx: ContextTypes.DEFAULT_TYPE):
     now_msk = datetime.now(timezone.utc).astimezone(
@@ -1077,8 +1303,13 @@ def main():
             CallbackQueryHandler(main_menu_callback, pattern="^menu_"),
         ],
         states={
+            ENTERING_NAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_name),
+            ],
             MAIN_MENU: [
                 CallbackQueryHandler(main_menu_callback, pattern="^(menu_|back_to_main_menu)"),
+                CallbackQueryHandler(break_start, pattern="^menu_break$"),
+                CallbackQueryHandler(break_end, pattern="^break_end$"),
             ],
             DOING_OPEN: [
                 CallbackQueryHandler(open_confirm, pattern="^open_confirm$"),
@@ -1136,6 +1367,11 @@ def main():
     )
 
     app.add_handler(conv)
+
+    # Перерыв — глобальные хендлеры (работают вне состояний ConversationHandler)
+    # Нужны чтобы кнопка "Я вернулся" из сообщения-таймера тоже работала
+    app.add_handler(CallbackQueryHandler(break_start, pattern="^menu_break$"))
+    app.add_handler(CallbackQueryHandler(break_end, pattern="^break_end$"))
 
     # Команды только для админа
     app.add_handler(CommandHandler("staff", staff_list))
